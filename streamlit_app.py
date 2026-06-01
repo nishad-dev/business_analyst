@@ -1,151 +1,170 @@
+# app.py - Clean version
 import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score
+import warnings
+from datetime import datetime
+from io import BytesIO
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+warnings.filterwarnings('ignore')
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+st.set_page_config(page_title="Sales Analytics", layout="wide")
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+st.title("📊 Enterprise Sales Analytics Platform")
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+# Initialize session state
+if 'data_loaded' not in st.session_state:
+    st.session_state.data_loaded = False
+if 'df' not in st.session_state:
+    st.session_state.df = None
+if 'analysis_complete' not in st.session_state:
+    st.session_state.analysis_complete = False
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+# Sidebar for file upload
+with st.sidebar:
+    st.header("Data Upload")
+    uploaded_file = st.file_uploader("Choose CSV or Excel file", type=['csv', 'xlsx', 'xls'])
+    
+    if uploaded_file:
+        try:
+            if uploaded_file.name.endswith('.csv'):
+                df = pd.read_csv(uploaded_file)
+            else:
+                df = pd.read_excel(uploaded_file)
+            st.session_state.df = df
+            st.session_state.data_loaded = True
+            st.success(f"✅ Loaded {len(df)} rows, {len(df.columns)} columns")
+        except Exception as e:
+            st.error(f"Error: {str(e)}")
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
+if st.session_state.data_loaded:
+    df = st.session_state.df
+    
+    st.subheader("Column Configuration")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        date_col = st.selectbox("Date Column", [''] + list(df.columns))
+        sales_col = st.selectbox("Sales Column", [''] + list(df.columns))
+        product_col = st.selectbox("Product Column", [''] + list(df.columns))
+    
+    with col2:
+        region_col = st.selectbox("Region Column", [''] + list(df.columns))
+        quantity_col = st.selectbox("Quantity Column", [''] + list(df.columns))
+        price_col = st.selectbox("Price Column", [''] + list(df.columns))
+    
+    with st.expander("Data Preview"):
+        st.dataframe(df.head(10))
+    
+    if st.button("Run Analysis", type="primary"):
+        if not sales_col:
+            st.error("Please select a sales column")
         else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+            with st.spinner("Processing..."):
+                df_clean = df.copy()
+                
+                if date_col:
+                    df_clean[date_col] = pd.to_datetime(df_clean[date_col], errors='coerce')
+                    df_clean = df_clean.dropna(subset=[date_col])
+                    df_clean['Month'] = df_clean[date_col].dt.month
+                    df_clean['Year'] = df_clean[date_col].dt.year
+                
+                if sales_col:
+                    df_clean[sales_col] = pd.to_numeric(df_clean[sales_col], errors='coerce')
+                    df_clean = df_clean[df_clean[sales_col] > 0]
+                
+                st.session_state.df_clean = df_clean
+                st.session_state.sales_col = sales_col
+                st.session_state.product_col = product_col
+                st.session_state.region_col = region_col
+                st.session_state.date_col = date_col
+                st.session_state.analysis_complete = True
+                st.rerun()
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+if st.session_state.get('analysis_complete', False):
+    df = st.session_state.df_clean
+    sales_col = st.session_state.sales_col
+    product_col = st.session_state.product_col
+    region_col = st.session_state.region_col
+    date_col = st.session_state.date_col
+    
+    # KPIs
+    total_revenue = df[sales_col].sum()
+    avg_transaction = df[sales_col].mean()
+    
+    st.subheader("Key Metrics")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Revenue", f"${total_revenue:,.2f}")
+    col2.metric("Avg Transaction", f"${avg_transaction:,.2f}")
+    col3.metric("Transactions", len(df))
+    if product_col:
+        col4.metric("Products", df[product_col].nunique())
+    
+    # Filters
+    st.subheader("Filters")
+    col1, col2 = st.columns(2)
+    filtered_df = df.copy()
+    
+    with col1:
+        if region_col:
+            regions = ['All'] + sorted(df[region_col].unique().tolist())
+            selected_region = st.selectbox("Region", regions)
+            if selected_region != 'All':
+                filtered_df = filtered_df[filtered_df[region_col] == selected_region]
+    
+    with col2:
+        if product_col:
+            products = ['All'] + sorted(df[product_col].unique().tolist())
+            selected_product = st.selectbox("Product", products)
+            if selected_product != 'All':
+                filtered_df = filtered_df[filtered_df[product_col] == selected_product]
+    
+    # Visualizations
+    st.subheader("Analytics")
+    
+    tab1, tab2, tab3 = st.tabs(["Top Products", "Regional Sales", "Monthly Trends"])
+    
+    with tab1:
+        if product_col:
+            top = filtered_df.groupby(product_col)[sales_col].sum().sort_values(ascending=False).head(10)
+            fig = px.bar(x=top.values, y=top.index, orientation='h')
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with tab2:
+        if region_col:
+            region = filtered_df.groupby(region_col)[sales_col].sum()
+            fig = px.pie(values=region.values, names=region.index, hole=0.3)
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with tab3:
+        if date_col and 'Month' in filtered_df.columns:
+            monthly = filtered_df.groupby('Month')[sales_col].sum()
+            fig = px.line(x=monthly.index, y=monthly.values, markers=True)
+            st.plotly_chart(fig, use_container_width=True)
+    
+    # Export
+    st.subheader("Export")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("Download Report"):
+            csv = filtered_df.to_csv(index=False)
+            st.download_button("Download CSV", csv, "report.csv", "text/csv")
+    
+    with col2:
+        if st.button("Download Summary"):
+            summary = pd.DataFrame({
+                'Metric': ['Revenue', 'Avg Transaction', 'Transactions'],
+                'Value': [f'${total_revenue:,.2f}', f'${avg_transaction:,.2f}', len(df)]
+            })
+            csv = summary.to_csv(index=False)
+            st.download_button("Download Summary", csv, "summary.csv", "text/csv")
+
+st.markdown("---")
+st.markdown("Powered by Machine Learning")
